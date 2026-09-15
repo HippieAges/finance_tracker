@@ -53,27 +53,18 @@ Income total, expense total, and net are computed when data is written to the sh
 ## Bank import (optional)
 
 1. Create a Plaid account and obtain a **client ID** and **secret** (Sandbox is fine for testing).
-2. In the app, open **Plaid settings…** and save your credentials and environment (`sandbox`, `development`, or `production`).
+2. In the app, open **Plaid settings…** and enter your credentials for **this session only** (they are never written to disk; re-enter them after restarting the app).
 3. Click **Connect bank…** and complete Plaid Link in the browser.
 4. Select the month/year, then **Import month from bank**.
 5. Review the prefilled amounts, edit if needed, then save.
 
-Merchant → category matching uses rules stored at:
+Linked bank items (access tokens, not your Client ID/secret) may be stored under:
 
 ```text
-~/.config/finance_tracker/merchant_rules.json
-```
-
-That file is created with defaults on first use; edit it to add or change patterns (first case-insensitive substring match wins).
-
-Plaid credentials and linked items are stored under:
-
-```text
-~/.config/finance_tracker/plaid_credentials.json
 ~/.config/finance_tracker/plaid_items.json
 ```
 
-Keep these files private; do not commit them.
+Keep that file private; do not commit it. Plaid Client ID and secret are never saved to disk.
 
 ## Google Sheets (optional)
 

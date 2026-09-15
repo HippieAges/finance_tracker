@@ -28,6 +28,9 @@ CONFIG_DIR = Path.home() / ".config" / "finance_tracker"
 CREDENTIALS_PATH = CONFIG_DIR / "plaid_credentials.json"
 ITEMS_PATH = CONFIG_DIR / "plaid_items.json"
 
+# Client ID / secret are kept in process memory only — never written to disk.
+_SESSION_CREDENTIALS: Optional[PlaidCredentials] = None
+
 ENV_HOSTS = {
     "sandbox": plaid.Environment.Sandbox,
     # Development host is still used by Plaid; newer plaid-python only exposes Sandbox/Production enums.
@@ -55,24 +58,38 @@ class LinkedItem:
     enabled: bool = True
 
 
+def clear_persisted_credentials() -> None:
+    """Delete any legacy on-disk Plaid API key file if present."""
+    try:
+        if CREDENTIALS_PATH.exists():
+            CREDENTIALS_PATH.unlink()
+    except OSError:
+        pass
+
+
 def load_credentials() -> Optional[PlaidCredentials]:
-    if not CREDENTIALS_PATH.exists():
-        return None
-    data = json.loads(CREDENTIALS_PATH.read_text(encoding="utf-8"))
-    creds = PlaidCredentials(
-        client_id=str(data.get("client_id", "")).strip(),
-        secret=str(data.get("secret", "")).strip(),
-        env=str(data.get("env", "sandbox")).strip().lower(),
-    )
-    return creds if creds.is_complete() else None
+    """Return session-only credentials (not loaded from disk)."""
+    clear_persisted_credentials()
+    return _SESSION_CREDENTIALS
 
 
-def save_credentials(creds: PlaidCredentials) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CREDENTIALS_PATH.write_text(
-        json.dumps(asdict(creds), indent=2),
-        encoding="utf-8",
+def set_session_credentials(creds: PlaidCredentials) -> None:
+    """Keep credentials in memory for this app session only; never write to disk."""
+    global _SESSION_CREDENTIALS
+    clear_persisted_credentials()
+    if not creds.is_complete():
+        raise ValueError("Client ID, secret, and a valid environment are required.")
+    _SESSION_CREDENTIALS = PlaidCredentials(
+        client_id=creds.client_id.strip(),
+        secret=creds.secret.strip(),
+        env=creds.env.strip().lower(),
     )
+
+
+def clear_session_credentials() -> None:
+    global _SESSION_CREDENTIALS
+    _SESSION_CREDENTIALS = None
+    clear_persisted_credentials()
 
 
 def load_items() -> List[LinkedItem]:

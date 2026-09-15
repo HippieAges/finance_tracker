@@ -22,13 +22,14 @@ from finance_tracker.bank.link_server import run_plaid_link
 from finance_tracker.bank.plaid_client import (
     PlaidClient,
     PlaidCredentials,
+    clear_persisted_credentials,
     linked_institution_summary,
     load_credentials,
     load_enabled_items,
     load_items,
     remove_item,
-    save_credentials,
     set_item_enabled,
+    set_session_credentials,
 )
 from finance_tracker.storage.gsheets_store import (
     connect_with_oauth,
@@ -227,30 +228,35 @@ class PlaidSettingsDialog(ctk.CTkToplevel):
     def __init__(self, master: ctk.CTk) -> None:
         super().__init__(master)
         self.title("Plaid settings")
-        self.geometry("520x340")
-        self.minsize(520, 340)
+        self.geometry("520x360")
+        self.minsize(520, 360)
         self.resizable(False, False)
         self.result: Optional[PlaidCredentials] = None
         self.transient(master)
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
 
-        existing = load_credentials()
+        # Never preload API keys — user must enter them each time.
+        clear_persisted_credentials()
 
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
         btn_row.pack(side="bottom", fill="x", padx=16, pady=16)
         ctk.CTkButton(btn_row, text="Cancel", width=120, command=self._on_cancel).pack(
             side="left", padx=8
         )
-        ctk.CTkButton(btn_row, text="Save", width=120, command=self._on_save).pack(
-            side="right", padx=8
-        )
+        ctk.CTkButton(
+            btn_row, text="Use this session", width=150, command=self._on_save
+        ).pack(side="right", padx=8)
 
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=16, pady=(16, 0))
 
         ctk.CTkLabel(
             body,
-            text="Create keys at https://dashboard.plaid.com — never commit them to git.",
+            text=(
+                "Create keys at https://dashboard.plaid.com.\n"
+                "Client ID and secret are kept in memory for this session only "
+                "and are never saved to disk."
+            ),
             wraplength=480,
             justify="left",
         ).pack(anchor="w", pady=(0, 12))
@@ -258,17 +264,13 @@ class PlaidSettingsDialog(ctk.CTkToplevel):
         ctk.CTkLabel(body, text="Client ID").pack(anchor="w", pady=(0, 4))
         self.client_entry = ctk.CTkEntry(body, width=480)
         self.client_entry.pack(fill="x", pady=(0, 8))
-        if existing:
-            self.client_entry.insert(0, existing.client_id)
 
         ctk.CTkLabel(body, text="Secret").pack(anchor="w", pady=(0, 4))
         self.secret_entry = ctk.CTkEntry(body, width=480, show="*")
         self.secret_entry.pack(fill="x", pady=(0, 8))
-        if existing:
-            self.secret_entry.insert(0, existing.secret)
 
         ctk.CTkLabel(body, text="Environment").pack(anchor="w", pady=(0, 4))
-        self.env_var = ctk.StringVar(value=(existing.env if existing else "sandbox"))
+        self.env_var = ctk.StringVar(value="sandbox")
         ctk.CTkOptionMenu(
             body,
             variable=self.env_var,
@@ -308,6 +310,8 @@ class FinanceApp(ctk.CTk):
         self.minsize(960, 640)
 
         DEFAULT_SAVE_DIR.mkdir(parents=True, exist_ok=True)
+        # Remove any legacy on-disk API keys from older app versions.
+        clear_persisted_credentials()
 
         self.store: Optional[object] = None
         self.categories: List[Category] = list(DEFAULT_CATEGORIES)
@@ -644,14 +648,18 @@ class FinanceApp(ctk.CTk):
         if dialog.result is None:
             return
         try:
-            save_credentials(dialog.result)
+            set_session_credentials(dialog.result)
         except Exception as exc:
             messagebox.showerror("Plaid settings", str(exc), parent=self)
             return
-        self.status_var.set(f"Saved Plaid credentials ({dialog.result.env}).")
+        self.status_var.set(
+            f"Plaid credentials set for this session only ({dialog.result.env})."
+        )
         messagebox.showinfo(
             "Plaid settings",
-            f"Saved credentials for env “{dialog.result.env}”.",
+            f"Credentials will be used for env “{dialog.result.env}” "
+            "until you quit the app.\n\n"
+            "They are not saved to disk; you’ll need to enter them again next time.",
             parent=self,
         )
 
