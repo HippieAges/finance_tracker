@@ -304,8 +304,8 @@ class FinanceApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Monthly Finance Tracker")
-        self.geometry("780x720")
-        self.minsize(680, 600)
+        self.geometry("1024x720")
+        self.minsize(960, 640)
 
         DEFAULT_SAVE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -405,47 +405,71 @@ class FinanceApp(ctk.CTk):
             ).pack(anchor="w", padx=8, pady=16)
             return
 
+        # Fixed entry size; labels flex/wrap so amount fields never get clipped.
+        entry_width = 110
+        label_wrap = 200
+
         columns = ctk.CTkFrame(self.form_frame, fg_color="transparent")
-        columns.pack(fill="both", expand=True)
+        columns.pack(fill="both", expand=True, padx=(4, 32))
+        columns.grid_columnconfigure(0, weight=1, uniform="fin_cols")
+        columns.grid_columnconfigure(1, weight=1, uniform="fin_cols")
 
         income_col = ctk.CTkFrame(columns, fg_color="transparent")
         expense_col = ctk.CTkFrame(columns, fg_color="transparent")
-        income_col.pack(side="left", fill="both", expand=True, padx=(0, 12))
-        expense_col.pack(side="left", fill="both", expand=True, padx=(12, 0))
+        income_col.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        expense_col.grid(row=0, column=1, sticky="nsew", padx=(12, 0))
+
+        for col in (income_col, expense_col):
+            # Labels absorb leftover space; entry column stays a fixed, visible strip.
+            col.grid_columnconfigure(0, weight=1, minsize=80)
+            col.grid_columnconfigure(1, weight=0, minsize=entry_width)
 
         ctk.CTkLabel(
-            income_col, text="Income", font=ctk.CTkFont(size=16, weight="bold")
-        ).pack(anchor="w", pady=(0, 8))
+            income_col,
+            text="Income",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
         ctk.CTkLabel(
-            expense_col, text="Expenses", font=ctk.CTkFont(size=16, weight="bold")
-        ).pack(anchor="w", pady=(0, 8))
+            expense_col,
+            text="Expenses",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
+        income_row = 1
+        expense_row = 1
         for cat in self.categories:
-            parent = income_col if cat.type == CategoryType.INCOME else expense_col
-            row = ctk.CTkFrame(parent, fg_color="transparent")
-            row.pack(fill="x", pady=3)
-            ctk.CTkLabel(row, text=cat.name, width=220, anchor="w").pack(side="left")
+            if cat.type == CategoryType.INCOME:
+                parent = income_col
+                r = income_row
+                income_row += 1
+            else:
+                parent = expense_col
+                r = expense_row
+                expense_row += 1
+
+            ctk.CTkLabel(
+                parent,
+                text=cat.name,
+                anchor="w",
+                justify="left",
+                wraplength=label_wrap,
+            ).grid(row=r, column=0, sticky="ew", padx=(0, 8), pady=4)
+
             var = ctk.StringVar(value="")
-            entry = ctk.CTkEntry(row, textvariable=var, width=120)
-            entry.pack(side="left")
+            entry = ctk.CTkEntry(parent, textvariable=var, width=entry_width, height=28)
+            entry.grid(row=r, column=1, sticky="e", pady=4)
             self.amount_vars[cat.name] = var
             self.amount_entries[cat.name] = entry
 
     def _build_footer(self) -> None:
         footer = ctk.CTkFrame(self, fg_color="transparent")
-        footer.pack(fill="x", padx=16, pady=(0, 8))
+        footer.pack(fill="x", padx=16, pady=(0, 16))
 
         ctk.CTkButton(
             footer, text="Save to spreadsheet", width=180, command=self._save
         ).pack(side="right")
-
-        ctk.CTkLabel(
-            self,
-            textvariable=self.status_var,
-            anchor="w",
-            wraplength=720,
-            justify="left",
-        ).pack(fill="x", padx=20, pady=(0, 16))
 
     def _selected_month_number(self) -> int:
         return MONTH_FULL.index(self.month_var.get()) + 1
@@ -726,14 +750,11 @@ class FinanceApp(ctk.CTk):
 
         self._apply_plaid_totals(category_totals)
         banks = linked_institution_summary(enabled_only=True)
-        summary = ", ".join(
-            f"{ct.category.name} {ct.amount:g}" for ct in category_totals
-        )
-        self.status_var.set(f"Imported {count} txns from {banks} → {summary}")
+        self.status_var.set(f"Imported {count} transactions from {banks}")
         messagebox.showinfo(
             "Bank import",
             f"Imported {count} transactions for {month_name} {year}\n"
-            f"from {banks}.\n\nCategories are from Plaid:\n{summary}\n\n"
+            f"from {banks}.\n\n"
             "Review the form, edit if needed, then Save to spreadsheet.",
             parent=self,
         )
@@ -797,17 +818,13 @@ class FinanceApp(ctk.CTk):
 
         month_name = self.month_var.get()
         dest = self.store.describe()  # type: ignore[attr-defined]
-        written = ", ".join(f"{k}={v:g}" for k, v in sorted(amounts.items()))
         self.dest_var.set(f"Saved → {dest}")
-        self.status_var.set(
-            f"Wrote {month_name} {entry.year} ({written}) → {dest}"
-        )
+        self.status_var.set(f"Wrote {month_name} {entry.year}")
         # Refresh fields from disk so the UI matches the file.
         self._try_prefill()
         messagebox.showinfo(
             "Saved",
-            f"Wrote {month_name} {entry.year} to sheet {layout.year}.\n\n"
-            f"Values: {written}\n\nFile:\n{dest}",
+            f"Wrote {month_name} {entry.year} to sheet {layout.year}.\n\nFile:\n{dest}",
             parent=self,
         )
 
