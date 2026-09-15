@@ -59,23 +59,8 @@ class Category:
     type: CategoryType
 
 
-DEFAULT_CATEGORIES: List[Category] = [
-    Category("Salary", CategoryType.INCOME),
-    Category("Other income", CategoryType.INCOME),
-    Category("Housing", CategoryType.EXPENSE),
-    Category("Groceries", CategoryType.EXPENSE),
-    Category("Dining", CategoryType.EXPENSE),
-    Category("Utilities", CategoryType.EXPENSE),
-    Category("Transport", CategoryType.EXPENSE),
-    Category("Insurance", CategoryType.EXPENSE),
-    Category("Subscriptions", CategoryType.EXPENSE),
-    Category("Healthcare", CategoryType.EXPENSE),
-    Category("Parking", CategoryType.EXPENSE),
-    Category("Games", CategoryType.EXPENSE),
-    Category("Gas", CategoryType.EXPENSE),
-    Category("Car Repair", CategoryType.EXPENSE),
-    Category("Other Expenses", CategoryType.EXPENSE),
-]
+DEFAULT_CATEGORIES: List[Category] = []
+# Categories come from Plaid personal_finance_category on import.
 
 
 @dataclass

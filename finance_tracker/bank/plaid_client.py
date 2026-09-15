@@ -52,6 +52,7 @@ class LinkedItem:
     access_token: str
     institution_name: str = ""
     cursor: str = ""
+    enabled: bool = True
 
 
 def load_credentials() -> Optional[PlaidCredentials]:
@@ -86,6 +87,7 @@ def load_items() -> List[LinkedItem]:
                 access_token=str(row["access_token"]),
                 institution_name=str(row.get("institution_name", "")),
                 cursor=str(row.get("cursor", "")),
+                enabled=bool(row.get("enabled", True)),
             )
         )
     return items
@@ -101,18 +103,44 @@ def upsert_item(item: LinkedItem) -> None:
     items = load_items()
     for i, existing in enumerate(items):
         if existing.item_id == item.item_id or existing.access_token == item.access_token:
+            item.enabled = True
             items[i] = item
             save_items(items)
             return
+    item.enabled = True
     items.append(item)
     save_items(items)
 
 
-def linked_institution_summary() -> str:
-    names = [i.institution_name or i.item_id for i in load_items()]
-    if not names:
-        return "No banks linked"
-    return " + ".join(names)
+def set_item_enabled(item_id: str, enabled: bool) -> None:
+    items = load_items()
+    for item in items:
+        if item.item_id == item_id:
+            item.enabled = enabled
+            break
+    save_items(items)
+
+
+def remove_item(item_id: str) -> None:
+    items = [i for i in load_items() if i.item_id != item_id]
+    save_items(items)
+
+
+def load_enabled_items() -> List[LinkedItem]:
+    return [i for i in load_items() if i.enabled]
+
+
+def linked_institution_summary(*, enabled_only: bool = True) -> str:
+    items = load_enabled_items() if enabled_only else load_items()
+    if not items:
+        return "No banks linked" if not enabled_only else "No banks selected for import"
+    parts = []
+    for i in items:
+        label = i.institution_name or i.item_id
+        if not enabled_only and not i.enabled:
+            label = f"{label} (excluded)"
+        parts.append(label)
+    return " + ".join(parts)
 
 
 class PlaidClient:
@@ -195,9 +223,11 @@ class PlaidClient:
         month: int,
         items: Optional[List[LinkedItem]] = None,
     ) -> List[BankTransaction]:
-        linked = items if items is not None else load_items()
+        linked = items if items is not None else load_enabled_items()
         if not linked:
-            raise RuntimeError("No banks linked. Use Connect bank first.")
+            raise RuntimeError(
+                "No banks selected for import. Connect a bank or re-enable one under Manage banks."
+            )
 
         start = date(year, month, 1)
         end = date(year, month, calendar.monthrange(year, month)[1])
@@ -295,8 +325,10 @@ class PlaidClient:
         if hasattr(pfc, "to_dict"):
             pfc = pfc.to_dict()
         pfc_primary = None
+        pfc_detailed = None
         if isinstance(pfc, dict):
             pfc_primary = pfc.get("primary")
+            pfc_detailed = pfc.get("detailed")
 
         merchant = data.get("merchant_name")
         return BankTransaction(
@@ -306,5 +338,6 @@ class PlaidClient:
             merchant_name=str(merchant) if merchant is not None else None,
             pending=bool(data.get("pending")),
             pfc_primary=str(pfc_primary) if pfc_primary else None,
+            pfc_detailed=str(pfc_detailed) if pfc_detailed else None,
             institution=institution or None,
         )

@@ -1,12 +1,18 @@
-"""Map bank transactions to monthly category totals."""
+"""Map bank transactions to monthly totals using Plaid categories."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
-from finance_tracker.bank.rules import load_rules
+from finance_tracker.model import Category, CategoryType
+
+# Plaid personal_finance_category.primary values treated as income.
+INCOME_PFC_PRIMARIES = {
+    "INCOME",
+    "TRANSFER_IN",
+}
 
 
 @dataclass
@@ -18,59 +24,59 @@ class BankTransaction:
     name: str
     merchant_name: Optional[str] = None
     pending: bool = False
-    pfc_primary: Optional[str] = None  # personal_finance_category.primary
+    pfc_primary: Optional[str] = None
+    pfc_detailed: Optional[str] = None
     institution: Optional[str] = None
 
 
-def _match_merchant(text: str, rules: List[tuple[str, str]]) -> Optional[str]:
-    hay = text.lower()
-    for pattern, category in rules:
-        if pattern and pattern in hay:
-            return category
-    return None
+@dataclass
+class CategoryTotal:
+    category: Category
+    amount: float
 
 
-def categorize_transaction(
-    txn: BankTransaction,
-    rules: Optional[List[tuple[str, str]]] = None,
-    pfc_fallback: Optional[Dict[str, str]] = None,
-) -> str:
-    if rules is None or pfc_fallback is None:
-        loaded_rules, loaded_pfc = load_rules()
-        rules = rules if rules is not None else loaded_rules
-        pfc_fallback = pfc_fallback if pfc_fallback is not None else loaded_pfc
+def humanize_plaid_category(raw: str) -> str:
+    """FOOD_AND_DRINK → Food And Drink."""
+    text = str(raw).strip()
+    if not text:
+        return "Uncategorized"
+    return " ".join(part.capitalize() for part in text.replace("-", "_").split("_"))
 
-    for text in (txn.merchant_name or "", txn.name or ""):
-        if not text:
-            continue
-        hit = _match_merchant(text, rules)
-        if hit:
-            return hit
 
+def plaid_category_name(txn: BankTransaction) -> str:
+    """Prefer Plaid detailed category, else primary, else Uncategorized."""
+    if txn.pfc_detailed:
+        return humanize_plaid_category(txn.pfc_detailed)
     if txn.pfc_primary:
-        mapped = pfc_fallback.get(txn.pfc_primary.upper())
-        if mapped:
-            return mapped
+        return humanize_plaid_category(txn.pfc_primary)
+    return "Uncategorized"
 
-    # Plaid: positive amount = outflow (expense); negative = inflow (income)
+
+def plaid_category_type(txn: BankTransaction) -> CategoryType:
+    primary = (txn.pfc_primary or "").upper()
+    if primary in INCOME_PFC_PRIMARIES:
+        return CategoryType.INCOME
+    # Plaid: negative amount = money into the account.
     if txn.amount < 0:
-        return "Other income"
-    return "Other Expenses"
+        return CategoryType.INCOME
+    return CategoryType.EXPENSE
+
+
+def categorize_transaction(txn: BankTransaction) -> Tuple[str, CategoryType]:
+    return plaid_category_name(txn), plaid_category_type(txn)
 
 
 def sum_month_by_category(
     transactions: Iterable[BankTransaction],
     year: int,
     month: int,
-) -> tuple[Dict[str, float], int]:
+) -> tuple[List[CategoryTotal], int]:
     """
-    Sum absolute category totals for a calendar month.
+    Sum absolute totals for a calendar month using Plaid categories.
 
-    Returns (category -> total, txn_count_included).
-    Expense categories get positive outflows; income categories get positive inflows.
+    Returns (category totals sorted income-then-expense, txn_count_included).
     """
-    rules, pfc_fallback = load_rules()
-    totals: Dict[str, float] = {}
+    totals: Dict[str, CategoryTotal] = {}
     count = 0
 
     for txn in transactions:
@@ -81,11 +87,26 @@ def sum_month_by_category(
         if txn.amount == 0:
             continue
 
-        category = categorize_transaction(txn, rules, pfc_fallback)
+        name, cat_type = categorize_transaction(txn)
         value = abs(float(txn.amount))
-        totals[category] = totals.get(category, 0.0) + value
+        if name in totals:
+            existing = totals[name]
+            # Prefer Income if any txn in the bucket is income-typed.
+            if cat_type == CategoryType.INCOME:
+                existing.category = Category(name, CategoryType.INCOME)
+            existing.amount = round(existing.amount + value, 2)
+        else:
+            totals[name] = CategoryTotal(
+                category=Category(name, cat_type),
+                amount=round(value, 2),
+            )
         count += 1
 
-    # Round to cents
-    totals = {k: round(v, 2) for k, v in totals.items()}
-    return totals, count
+    ordered = sorted(
+        totals.values(),
+        key=lambda ct: (
+            0 if ct.category.type == CategoryType.INCOME else 1,
+            ct.category.name.lower(),
+        ),
+    )
+    return ordered, count

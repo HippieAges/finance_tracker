@@ -17,17 +17,19 @@ from finance_tracker.model import (
     CategoryType,
     MonthEntry,
 )
-from finance_tracker.bank.categorize import sum_month_by_category
+from finance_tracker.bank.categorize import CategoryTotal, sum_month_by_category
 from finance_tracker.bank.link_server import run_plaid_link
 from finance_tracker.bank.plaid_client import (
     PlaidClient,
     PlaidCredentials,
     linked_institution_summary,
     load_credentials,
+    load_enabled_items,
     load_items,
+    remove_item,
     save_credentials,
+    set_item_enabled,
 )
-from finance_tracker.bank.rules import RULES_PATH, ensure_rules_file
 from finance_tracker.storage.gsheets_store import (
     connect_with_oauth,
     connect_with_service_account,
@@ -42,65 +44,94 @@ ctk.set_default_color_theme("blue")
 DEFAULT_SAVE_DIR = Path.home() / "Documents" / "finance_tracker"
 
 
-class AddCategoryDialog(ctk.CTkToplevel):
-    """Modal dialog to create a category and return it via .result."""
+class ManageBanksDialog(ctk.CTkToplevel):
+    """Include/exclude linked banks from import, or remove them entirely."""
 
     def __init__(self, master: ctk.CTk) -> None:
         super().__init__(master)
-        self.title("Add category")
-        self.geometry("440x260")
-        self.minsize(440, 260)
-        self.resizable(False, False)
-        self.result: Optional[Category] = None
-
+        self.title("Manage banks")
+        self.geometry("560x420")
+        self.minsize(520, 360)
         self.transient(master)
-        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._vars: Dict[str, ctk.BooleanVar] = {}
 
-        # Build bottom buttons first so they stay visible.
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
         btn_row.pack(side="bottom", fill="x", padx=16, pady=16)
-        ctk.CTkButton(btn_row, text="Cancel", width=120, command=self._on_cancel).pack(
-            side="left", padx=8
-        )
-        ctk.CTkButton(btn_row, text="Save", width=120, command=self._on_save).pack(
+        ctk.CTkButton(btn_row, text="Close", width=120, command=self._on_close).pack(
             side="right", padx=8
         )
+        ctk.CTkButton(
+            btn_row, text="Save inclusion", width=140, command=self._on_save
+        ).pack(side="right", padx=8)
 
-        body = ctk.CTkFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=16, pady=(16, 0))
+        ctk.CTkLabel(
+            self,
+            text="Uncheck a bank to exclude it from Import month. Remove deletes the link.",
+            wraplength=500,
+            justify="left",
+        ).pack(anchor="w", padx=16, pady=(16, 8))
 
-        ctk.CTkLabel(body, text="Category name").pack(anchor="w", pady=(0, 4))
-        self.name_entry = ctk.CTkEntry(body, width=400, placeholder_text="e.g. Coffee")
-        self.name_entry.pack(fill="x", pady=(0, 12))
-        self.name_entry.bind("<Return>", lambda _e: self._on_save())
-
-        ctk.CTkLabel(body, text="Type").pack(anchor="w", pady=(0, 4))
-        self.type_var = ctk.StringVar(value=CategoryType.EXPENSE.value)
-        ctk.CTkOptionMenu(
-            body,
-            variable=self.type_var,
-            values=[CategoryType.INCOME.value, CategoryType.EXPENSE.value],
-            width=400,
-        ).pack(fill="x")
+        self.list_frame = ctk.CTkScrollableFrame(self, label_text="Linked banks")
+        self.list_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        self._rebuild_list()
 
         self.update_idletasks()
         self.grab_set()
         self.lift()
-        self.focus_force()
-        self.after(50, lambda: self.name_entry.focus_set())
         self.wait_window(self)
 
-    def _on_cancel(self) -> None:
-        self.result = None
-        self.grab_release()
-        self.destroy()
+    def _rebuild_list(self) -> None:
+        for child in self.list_frame.winfo_children():
+            child.destroy()
+        self._vars.clear()
+        items = load_items()
+        if not items:
+            ctk.CTkLabel(self.list_frame, text="No banks linked yet.").pack(anchor="w")
+            return
+        for item in items:
+            row = ctk.CTkFrame(self.list_frame, fg_color="transparent")
+            row.pack(fill="x", pady=6)
+            var = ctk.BooleanVar(value=item.enabled)
+            self._vars[item.item_id] = var
+            label = item.institution_name or item.item_id
+            ctk.CTkCheckBox(
+                row,
+                text=f"Include {label}",
+                variable=var,
+                width=320,
+            ).pack(side="left", padx=(0, 8))
+            ctk.CTkButton(
+                row,
+                text="Remove",
+                width=90,
+                fg_color="#8B3A3A",
+                hover_color="#A04545",
+                command=lambda iid=item.item_id, name=label: self._remove(iid, name),
+            ).pack(side="right")
+
+    def _remove(self, item_id: str, name: str) -> None:
+        if not messagebox.askyesno(
+            "Remove bank",
+            f"Remove “{name}” from this app?\n\n"
+            "It will no longer be used for imports until you Connect bank again.",
+            parent=self,
+        ):
+            return
+        remove_item(item_id)
+        self._rebuild_list()
 
     def _on_save(self) -> None:
-        name = self.name_entry.get().strip()
-        if not name:
-            messagebox.showerror("Invalid", "Category name is required.", parent=self)
-            return
-        self.result = Category(name, CategoryType(self.type_var.get()))
+        for item_id, var in self._vars.items():
+            set_item_enabled(item_id, bool(var.get()))
+        messagebox.showinfo(
+            "Manage banks",
+            f"Import will use: {linked_institution_summary(enabled_only=True)}",
+            parent=self,
+        )
+        self._on_close()
+
+    def _on_close(self) -> None:
         self.grab_release()
         self.destroy()
 
@@ -287,7 +318,7 @@ class FinanceApp(ctk.CTk):
         self.month_var = ctk.StringVar(value=MONTH_FULL[today.month - 1])
         self.year_var = ctk.StringVar(value=str(today.year))
         self.status_var = ctk.StringVar(
-            value="Choose New file, Open .xlsx, or Connect Google Sheet."
+            value="Connect bank → Import month (Plaid categories) → Save to spreadsheet."
         )
         self.dest_var = ctk.StringVar(value="No destination selected")
 
@@ -317,6 +348,9 @@ class FinanceApp(ctk.CTk):
         ).pack(side="left", padx=3)
         ctk.CTkButton(
             bank_bar, text="Connect bank…", width=130, command=self._connect_bank
+        ).pack(side="left", padx=3)
+        ctk.CTkButton(
+            bank_bar, text="Manage banks…", width=130, command=self._manage_banks
         ).pack(side="left", padx=3)
         ctk.CTkButton(
             bank_bar,
@@ -363,6 +397,14 @@ class FinanceApp(ctk.CTk):
         self.amount_vars.clear()
         self.amount_entries.clear()
 
+        if not self.categories:
+            ctk.CTkLabel(
+                self.form_frame,
+                text="No categories yet.\nConnect a bank and click Import month from bank\nto load Plaid’s income/expense categories.",
+                justify="left",
+            ).pack(anchor="w", padx=8, pady=16)
+            return
+
         columns = ctk.CTkFrame(self.form_frame, fg_color="transparent")
         columns.pack(fill="both", expand=True)
 
@@ -382,7 +424,7 @@ class FinanceApp(ctk.CTk):
             parent = income_col if cat.type == CategoryType.INCOME else expense_col
             row = ctk.CTkFrame(parent, fg_color="transparent")
             row.pack(fill="x", pady=3)
-            ctk.CTkLabel(row, text=cat.name, width=140, anchor="w").pack(side="left")
+            ctk.CTkLabel(row, text=cat.name, width=220, anchor="w").pack(side="left")
             var = ctk.StringVar(value="")
             entry = ctk.CTkEntry(row, textvariable=var, width=120)
             entry.pack(side="left")
@@ -393,9 +435,6 @@ class FinanceApp(ctk.CTk):
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.pack(fill="x", padx=16, pady=(0, 8))
 
-        ctk.CTkButton(
-            footer, text="+ Add category", width=140, command=self._add_category
-        ).pack(side="left")
         ctk.CTkButton(
             footer, text="Save to spreadsheet", width=180, command=self._save
         ).pack(side="right")
@@ -492,7 +531,8 @@ class FinanceApp(ctk.CTk):
         self.status_var.set(f"Created workbook at {store.describe()}")
         messagebox.showinfo(
             "Workbook created",
-            f"Created:\n{store.describe()}\n\nEnter amounts and click Save to spreadsheet.",
+            f"Created:\n{store.describe()}\n\n"
+            "Import month from bank to load Plaid categories, then Save to spreadsheet.",
             parent=self,
         )
 
@@ -560,51 +600,14 @@ class FinanceApp(ctk.CTk):
             return
         self._set_store(store, store.describe())
 
-    def _apply_amounts_to_form(self, amounts: Dict[str, float], *, clear_others: bool = False) -> None:
-        """Write category totals into the form fields."""
-        # Ensure categories for imported keys exist on the form.
-        known = {c.name for c in self.categories}
-        changed = False
-        for name in amounts:
-            if name not in known:
-                # Infer type from defaults / income names
-                income_names = {
-                    c.name for c in DEFAULT_CATEGORIES if c.type == CategoryType.INCOME
-                }
-                cat_type = (
-                    CategoryType.INCOME
-                    if name in income_names or name == "Other income"
-                    else CategoryType.EXPENSE
-                )
-                self.categories.append(Category(name, cat_type))
-                known.add(name)
-                changed = True
-        # Always ensure Dining exists for bank imports.
-        if "Dining" not in known:
-            self.categories.insert(
-                next(
-                    (
-                        i
-                        for i, c in enumerate(self.categories)
-                        if c.name == "Groceries"
-                    ),
-                    len(self.categories),
-                )
-                + 1,
-                Category("Dining", CategoryType.EXPENSE),
-            )
-            changed = True
-        if changed:
-            self._rebuild_amount_fields()
-
+    def _apply_plaid_totals(self, category_totals: List[CategoryTotal]) -> None:
+        """Replace form categories with Plaid totals from the import."""
+        self.categories = [ct.category for ct in category_totals]
+        self._rebuild_amount_fields()
+        amounts = {ct.category.name: ct.amount for ct in category_totals}
         for name, var in self.amount_vars.items():
-            if name in amounts:
-                val = amounts[name]
-                text = f"{val:g}"
-            elif clear_others:
-                text = ""
-            else:
-                continue
+            val = amounts.get(name, 0.0)
+            text = f"{val:g}" if val else ""
             var.set(text)
             entry = self.amount_entries.get(name)
             if entry is not None:
@@ -618,19 +621,20 @@ class FinanceApp(ctk.CTk):
             return
         try:
             save_credentials(dialog.result)
-            ensure_rules_file()
         except Exception as exc:
             messagebox.showerror("Plaid settings", str(exc), parent=self)
             return
-        self.status_var.set(
-            f"Saved Plaid credentials ({dialog.result.env}). "
-            f"Merchant rules: {RULES_PATH}"
-        )
+        self.status_var.set(f"Saved Plaid credentials ({dialog.result.env}).")
         messagebox.showinfo(
             "Plaid settings",
-            f"Saved credentials for env “{dialog.result.env}”.\n\n"
-            f"Merchant rules file:\n{RULES_PATH}",
+            f"Saved credentials for env “{dialog.result.env}”.",
             parent=self,
+        )
+
+    def _manage_banks(self) -> None:
+        ManageBanksDialog(self)
+        self.status_var.set(
+            f"Banks for import: {linked_institution_summary(enabled_only=True)}"
         )
 
     def _connect_bank(self) -> None:
@@ -661,13 +665,13 @@ class FinanceApp(ctk.CTk):
             self.status_var.set(f"Bank connect failed: {exc}")
             return
 
-        summary = linked_institution_summary()
+        summary = linked_institution_summary(enabled_only=False)
         self.status_var.set(f"Linked {item.institution_name}. Banks: {summary}")
         messagebox.showinfo(
             "Bank linked",
             f"Linked: {item.institution_name}\n\n"
             f"All linked banks: {summary}\n\n"
-            "Use Import month from bank to fill this month’s amounts.",
+            "Use Manage banks to exclude a bank, then Import month from bank.",
             parent=self,
         )
 
@@ -686,6 +690,14 @@ class FinanceApp(ctk.CTk):
                 parent=self,
             )
             return
+        if not load_enabled_items():
+            messagebox.showerror(
+                "Plaid",
+                "All linked banks are excluded.\n\n"
+                "Open Manage banks… and check at least one bank to include.",
+                parent=self,
+            )
+            return
 
         year = self._selected_year()
         month = self._selected_month_number()
@@ -694,16 +706,15 @@ class FinanceApp(ctk.CTk):
         self.update_idletasks()
 
         try:
-            ensure_rules_file()
             client = PlaidClient()
             txns = client.fetch_month_transactions(year, month)
-            totals, count = sum_month_by_category(txns, year, month)
+            category_totals, count = sum_month_by_category(txns, year, month)
         except Exception as exc:
             messagebox.showerror("Bank import", str(exc), parent=self)
             self.status_var.set(f"Import failed: {exc}")
             return
 
-        if count == 0 or not totals:
+        if count == 0 or not category_totals:
             messagebox.showinfo(
                 "Bank import",
                 f"No posted transactions found for {month_name} {year}.\n\n"
@@ -713,16 +724,16 @@ class FinanceApp(ctk.CTk):
             self.status_var.set(f"No transactions for {month_name} {year}.")
             return
 
-        self._apply_amounts_to_form(totals, clear_others=True)
-        banks = linked_institution_summary()
-        summary = ", ".join(f"{k} {v:g}" for k, v in sorted(totals.items()))
-        self.status_var.set(
-            f"Imported {count} txns from {banks} → {summary}"
+        self._apply_plaid_totals(category_totals)
+        banks = linked_institution_summary(enabled_only=True)
+        summary = ", ".join(
+            f"{ct.category.name} {ct.amount:g}" for ct in category_totals
         )
+        self.status_var.set(f"Imported {count} txns from {banks} → {summary}")
         messagebox.showinfo(
             "Bank import",
             f"Imported {count} transactions for {month_name} {year}\n"
-            f"from {banks}.\n\n{summary}\n\n"
+            f"from {banks}.\n\nCategories are from Plaid:\n{summary}\n\n"
             "Review the form, edit if needed, then Save to spreadsheet.",
             parent=self,
         )
@@ -738,14 +749,8 @@ class FinanceApp(ctk.CTk):
                 var.set("")
             return
         if layout.categories:
-            existing_names = {c.name for c in self.categories}
-            changed = False
-            for cat in layout.categories:
-                if cat.name not in existing_names:
-                    self.categories.append(cat)
-                    changed = True
-            if changed:
-                self._rebuild_amount_fields()
+            self.categories = list(layout.categories)
+            self._rebuild_amount_fields()
 
         amounts = layout.get_month_amounts(month)
         for name, var in self.amount_vars.items():
@@ -761,35 +766,6 @@ class FinanceApp(ctk.CTk):
                 if text:
                     entry.insert(0, text)
 
-    def _add_category(self) -> None:
-        dialog = AddCategoryDialog(self)
-        if dialog.result is None:
-            return
-        cat = dialog.result
-        if any(c.name == cat.name for c in self.categories):
-            messagebox.showerror(
-                "Duplicate", f"Category already exists: {cat.name}", parent=self
-            )
-            return
-
-        self.categories.append(cat)
-        self._rebuild_amount_fields()
-
-        if self.store is not None:
-            try:
-                self.store.add_category(self._selected_year(), cat)  # type: ignore[attr-defined]
-                self.status_var.set(
-                    f"Added category “{cat.name}” to the form and spreadsheet."
-                )
-            except Exception as exc:
-                self.status_var.set(
-                    f"Added “{cat.name}” to the form. Spreadsheet update failed: {exc}"
-                )
-        else:
-            self.status_var.set(
-                f"Added category “{cat.name}” to the form. It will be included when you save."
-            )
-
     def _save(self) -> None:
         # Capture typed values first, before any dialogs/UI refreshes.
         try:
@@ -800,8 +776,7 @@ class FinanceApp(ctk.CTk):
         if not amounts:
             messagebox.showerror(
                 "Invalid input",
-                "Enter at least one amount before saving the month.\n\n"
-                "Example: Salary 4000, Housing 1000, then click Save to spreadsheet.",
+                "Import month from bank first (or enter at least one amount), then save.",
                 parent=self,
             )
             return

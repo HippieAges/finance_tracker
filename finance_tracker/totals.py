@@ -41,6 +41,8 @@ def category_row_range(category_count: int) -> Tuple[int, int]:
 
 def total_row_indices(category_count: int) -> Tuple[int, int, int]:
     """1-based row indices for Income total, Expense total, Net."""
+    if category_count <= 0:
+        return 2, 3, 4
     start, end = category_row_range(category_count)
     income_total = end + 1
     expense_total = end + 2
