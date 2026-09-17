@@ -70,6 +70,8 @@ class MonthEntry:
     year: int
     month: int  # 1-12
     amounts: Dict[str, float] = field(default_factory=dict)
+    # subcategory_amounts[category_name][subcategory_name] = amount
+    subcategory_amounts: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
     @property
     def month_label(self) -> str:
@@ -113,6 +115,8 @@ class YearSheetLayout:
     months: List[str] = field(default_factory=list)
     # amounts[category_name][month_label] = float
     amounts: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    # subcategory_amounts[category_name][subcategory_name][month_label] = float
+    subcategory_amounts: Dict[str, Dict[str, Dict[str, float]]] = field(default_factory=dict)
 
     def ensure_categories(self, categories: Optional[List[Category]] = None) -> None:
         cats = categories or DEFAULT_CATEGORIES
@@ -122,6 +126,22 @@ class YearSheetLayout:
                 self.categories.append(cat)
                 known.add(cat.name)
             self.amounts.setdefault(cat.name, {})
+
+    def replace_categories(self, categories: List[Category]) -> None:
+        """Replace category rows while preserving amounts for matching names."""
+        self.categories = list(categories)
+        keep = {c.name for c in self.categories}
+        self.amounts = {
+            name: values for name, values in self.amounts.items() if name in keep
+        }
+        self.subcategory_amounts = {
+            name: values
+            for name, values in self.subcategory_amounts.items()
+            if name in keep
+        }
+        for cat in self.categories:
+            self.amounts.setdefault(cat.name, {})
+            self.subcategory_amounts.setdefault(cat.name, {})
 
     def apply_month(self, entry: MonthEntry) -> None:
         if entry.year != self.year:
@@ -135,6 +155,13 @@ class YearSheetLayout:
                 if value is None or value == "":
                     continue
                 self.amounts[cat.name][label] = float(value)
+            if cat.name in entry.subcategory_amounts:
+                self.subcategory_amounts.setdefault(cat.name, {})
+                for sub_name, sub_value in entry.subcategory_amounts[cat.name].items():
+                    if sub_value is None or sub_value == "":
+                        continue
+                    self.subcategory_amounts[cat.name].setdefault(sub_name, {})
+                    self.subcategory_amounts[cat.name][sub_name][label] = float(sub_value)
 
     def get_month_amounts(self, month: int) -> Dict[str, float]:
         label = MONTH_ABBREV[month - 1]
@@ -150,3 +177,4 @@ class YearSheetLayout:
             raise ValueError(f"Category already exists: {category.name}")
         self.categories.append(category)
         self.amounts.setdefault(category.name, {})
+        self.subcategory_amounts.setdefault(category.name, {})

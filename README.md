@@ -1,14 +1,15 @@
 # Monthly Finance Tracker
 
-A desktop app for tracking monthly income and expenses by category. Enter amounts manually or import them from linked bank accounts via Plaid, then save to an Excel workbook (`.xlsx`) or a Google Sheet.
+A desktop app for tracking monthly income and expenses by category. Import monthly data from linked bank accounts via Plaid, review/edit the amounts, then save to an Excel workbook (`.xlsx`) or a Google Sheet.
 
 ## Features
 
-- **Category-based monthly budget form** — income and expense fields with sensible defaults (Salary, Housing, Groceries, etc.)
-- **Custom categories** — add income or expense categories as needed
+- **Plaid category form** — income and expense fields are generated from Plaid categories returned by import
+- **Income filtering** — only Salary and savings Interest income are imported
+- **Payment filtering** — credit card payments are omitted so spending is counted by purchase category instead
 - **Excel storage** — create or open `.xlsx` workbooks with one sheet per year
 - **Google Sheets** — connect via OAuth or a service account and write the same layout remotely
-- **Bank import (Plaid)** — link institutions, pull transactions for a selected month, and map merchants to categories using editable rules
+- **Bank import (Plaid)** — link institutions for the current session, pull transactions for a selected month, and use generalized Plaid category names with hidden transaction-name subcategories in Excel
 
 ## Requirements
 
@@ -49,6 +50,7 @@ python3 -m finance_tracker.app
 4. Click **Save to spreadsheet**
 
 Income total, expense total, and net are computed when data is written to the sheet.
+In Excel, imported categories with transaction details have hidden grouped rows underneath them. Expand a category row to see merchant/payee subcategories; the child rows sum to the parent category.
 
 ## Bank import (optional)
 
@@ -58,13 +60,7 @@ Income total, expense total, and net are computed when data is written to the sh
 4. Select the month/year, then **Import month from bank**.
 5. Review the prefilled amounts, edit if needed, then save.
 
-Linked bank items (access tokens, not your Client ID/secret) may be stored under:
-
-```text
-~/.config/finance_tracker/plaid_items.json
-```
-
-Keep that file private; do not commit it. Plaid Client ID and secret are never saved to disk.
+Linked bank access tokens are kept in memory for the current session only. Manage Banks starts empty after each app restart. Plaid Client ID and secret are never saved to disk.
 
 ## Google Sheets (optional)
 

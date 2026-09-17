@@ -6,7 +6,7 @@ import calendar
 import json
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -30,6 +30,9 @@ ITEMS_PATH = CONFIG_DIR / "plaid_items.json"
 
 # Client ID / secret are kept in process memory only — never written to disk.
 _SESSION_CREDENTIALS: Optional[PlaidCredentials] = None
+# Linked bank access tokens are also session-only. Manage Banks starts empty
+# every time the app is restarted.
+_SESSION_ITEMS: List[LinkedItem] = []
 
 ENV_HOSTS = {
     "sandbox": plaid.Environment.Sandbox,
@@ -67,6 +70,15 @@ def clear_persisted_credentials() -> None:
         pass
 
 
+def clear_persisted_items() -> None:
+    """Delete any legacy on-disk linked-bank item file if present."""
+    try:
+        if ITEMS_PATH.exists():
+            ITEMS_PATH.unlink()
+    except OSError:
+        pass
+
+
 def load_credentials() -> Optional[PlaidCredentials]:
     """Return session-only credentials (not loaded from disk)."""
     clear_persisted_credentials()
@@ -93,27 +105,20 @@ def clear_session_credentials() -> None:
 
 
 def load_items() -> List[LinkedItem]:
-    if not ITEMS_PATH.exists():
-        return []
-    data = json.loads(ITEMS_PATH.read_text(encoding="utf-8"))
-    items: List[LinkedItem] = []
-    for row in data.get("items", []):
-        items.append(
-            LinkedItem(
-                item_id=str(row["item_id"]),
-                access_token=str(row["access_token"]),
-                institution_name=str(row.get("institution_name", "")),
-                cursor=str(row.get("cursor", "")),
-                enabled=bool(row.get("enabled", True)),
-            )
-        )
-    return items
+    clear_persisted_items()
+    return list(_SESSION_ITEMS)
 
 
 def save_items(items: List[LinkedItem]) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    payload = {"items": [asdict(i) for i in items]}
-    ITEMS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    global _SESSION_ITEMS
+    clear_persisted_items()
+    _SESSION_ITEMS = list(items)
+
+
+def clear_session_items() -> None:
+    global _SESSION_ITEMS
+    _SESSION_ITEMS = []
+    clear_persisted_items()
 
 
 def upsert_item(item: LinkedItem) -> None:

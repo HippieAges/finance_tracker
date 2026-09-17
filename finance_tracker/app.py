@@ -12,6 +12,7 @@ import customtkinter as ctk
 
 from finance_tracker.model import (
     DEFAULT_CATEGORIES,
+    MONTH_ABBREV,
     MONTH_FULL,
     Category,
     CategoryType,
@@ -23,6 +24,7 @@ from finance_tracker.bank.plaid_client import (
     PlaidClient,
     PlaidCredentials,
     clear_persisted_credentials,
+    clear_persisted_items,
     linked_institution_summary,
     load_credentials,
     load_enabled_items,
@@ -68,7 +70,10 @@ class ManageBanksDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             self,
-            text="Uncheck a bank to exclude it from Import month. Remove deletes the link.",
+            text=(
+                "Uncheck a bank to exclude it from Import month. Remove deletes "
+                "the link for this app session. The list resets when you quit."
+            ),
             wraplength=500,
             justify="left",
         ).pack(anchor="w", padx=16, pady=(16, 8))
@@ -115,7 +120,7 @@ class ManageBanksDialog(ctk.CTkToplevel):
         if not messagebox.askyesno(
             "Remove bank",
             f"Remove “{name}” from this app?\n\n"
-            "It will no longer be used for imports until you Connect bank again.",
+            "It will no longer be used for imports in this session.",
             parent=self,
         ):
             return
@@ -310,11 +315,13 @@ class FinanceApp(ctk.CTk):
         self.minsize(960, 640)
 
         DEFAULT_SAVE_DIR.mkdir(parents=True, exist_ok=True)
-        # Remove any legacy on-disk API keys from older app versions.
+        # Remove legacy on-disk Plaid secrets/items from older app versions.
         clear_persisted_credentials()
+        clear_persisted_items()
 
         self.store: Optional[object] = None
         self.categories: List[Category] = list(DEFAULT_CATEGORIES)
+        self.subcategory_amounts: Dict[str, Dict[str, float]] = {}
         self.amount_vars: Dict[str, ctk.StringVar] = {}
         self.amount_entries: Dict[str, ctk.CTkEntry] = {}
 
@@ -507,6 +514,24 @@ class FinanceApp(ctk.CTk):
             amounts[name] = value
         return amounts
 
+    def _subcategory_amounts_for_save(
+        self,
+        amounts: Dict[str, float],
+    ) -> Dict[str, Dict[str, float]]:
+        """
+        Keep imported child rows only while they still add up to the visible total.
+        If the user edits a parent value, save that parent as a direct amount.
+        """
+        result: Dict[str, Dict[str, float]] = {}
+        for category_name, children in self.subcategory_amounts.items():
+            if category_name not in amounts:
+                continue
+            child_total = round(sum(children.values()), 2)
+            parent_total = round(amounts[category_name], 2)
+            if child_total == parent_total:
+                result[category_name] = dict(children)
+        return result
+
     def _normalize_xlsx_path(self, path: str) -> Path:
         p = Path(path).expanduser()
         if p.suffix.lower() != ".xlsx":
@@ -631,6 +656,11 @@ class FinanceApp(ctk.CTk):
     def _apply_plaid_totals(self, category_totals: List[CategoryTotal]) -> None:
         """Replace form categories with Plaid totals from the import."""
         self.categories = [ct.category for ct in category_totals]
+        self.subcategory_amounts = {
+            ct.category.name: dict(ct.subcategories)
+            for ct in category_totals
+            if ct.subcategories
+        }
         self._rebuild_amount_fields()
         amounts = {ct.category.name: ct.amount for ct in category_totals}
         for name, var in self.amount_vars.items():
@@ -779,6 +809,17 @@ class FinanceApp(ctk.CTk):
             return
         if layout.categories:
             self.categories = list(layout.categories)
+            label = MONTH_ABBREV[month - 1]
+            self.subcategory_amounts = {}
+            if label in layout.months:
+                self.subcategory_amounts = {
+                    cat_name: {
+                        sub_name: month_values[label]
+                        for sub_name, month_values in subcats.items()
+                        if label in month_values
+                    }
+                    for cat_name, subcats in layout.subcategory_amounts.items()
+                }
             self._rebuild_amount_fields()
 
         amounts = layout.get_month_amounts(month)
@@ -817,6 +858,7 @@ class FinanceApp(ctk.CTk):
             year=self._selected_year(),
             month=self._selected_month_number(),
             amounts=amounts,
+            subcategory_amounts=self._subcategory_amounts_for_save(amounts),
         )
         try:
             layout = self.store.save_month(entry, categories=self.categories)  # type: ignore[attr-defined]

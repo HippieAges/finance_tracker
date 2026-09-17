@@ -91,8 +91,8 @@ class GSheetsStore:
         try:
             ws = self._ss.worksheet(name)
             layout = self._read_sheet(ws, year)
-            if categories:
-                layout.ensure_categories(categories)
+            if categories is not None:
+                layout.replace_categories(categories)
             return layout
         except gspread.WorksheetNotFound:
             pass
@@ -125,6 +125,8 @@ class GSheetsStore:
 
         categories: List[Category] = []
         amounts: dict = {}
+        subcategory_amounts: dict = {}
+        current_category: Optional[str] = None
         for row in rows[1:]:
             if not row or not row[0]:
                 continue
@@ -132,11 +134,25 @@ class GSheetsStore:
             if name in TOTAL_LABELS:
                 break
             type_raw = str(row[1]).strip() if len(row) > 1 and row[1] else "Expense"
+            if type_raw == "Subcategory":
+                if not current_category:
+                    continue
+                sub_amounts: dict = {}
+                for i, month in enumerate(months):
+                    col_idx = 2 + i
+                    if col_idx < len(row):
+                        parsed = parse_amount(row[col_idx])
+                        if parsed is not None:
+                            sub_amounts[month] = parsed
+                if sub_amounts:
+                    subcategory_amounts.setdefault(current_category, {})[name] = sub_amounts
+                continue
             try:
                 cat_type = CategoryType(type_raw)
             except ValueError:
                 cat_type = CategoryType.EXPENSE
             categories.append(Category(name, cat_type))
+            current_category = name
             cat_amounts: dict = {}
             for i, month in enumerate(months):
                 col_idx = 2 + i
@@ -149,11 +165,19 @@ class GSheetsStore:
         if not categories:
             categories = list(DEFAULT_CATEGORIES)
 
+        for cat_name, children in subcategory_amounts.items():
+            cat_amounts = amounts.setdefault(cat_name, {})
+            for month in months:
+                child_total = sum(values.get(month, 0.0) for values in children.values())
+                if child_total:
+                    cat_amounts[month] = round(child_total, 2)
+
         return YearSheetLayout(
             year=year,
             categories=categories,
             months=months,
             amounts=amounts,
+            subcategory_amounts=subcategory_amounts,
         )
 
     def _write_layout(self, layout: YearSheetLayout) -> None:

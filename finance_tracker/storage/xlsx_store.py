@@ -168,8 +168,8 @@ class XlsxStore:
         name = str(year)
         if name in wb.sheetnames:
             layout = self._read_sheet(wb[name], year)
-            if categories:
-                layout.ensure_categories(categories)
+            if categories is not None:
+                layout.replace_categories(categories)
             return layout
 
         template = categories or self._template_categories(wb) or list(DEFAULT_CATEGORIES)
@@ -200,6 +200,8 @@ class XlsxStore:
 
         categories: List[Category] = []
         amounts: dict = {}
+        subcategory_amounts: dict = {}
+        current_category: Optional[str] = None
         for row in rows[1:]:
             if not row or row[0] is None:
                 continue
@@ -207,11 +209,25 @@ class XlsxStore:
             if name in TOTAL_LABELS:
                 break
             type_raw = str(row[1]).strip() if len(row) > 1 and row[1] is not None else "Expense"
+            if type_raw == "Subcategory":
+                if not current_category:
+                    continue
+                sub_amounts: dict = {}
+                for i, month in enumerate(months):
+                    col_idx = 2 + i
+                    if col_idx < len(row):
+                        parsed = parse_amount(row[col_idx])
+                        if parsed is not None:
+                            sub_amounts[month] = parsed
+                if sub_amounts:
+                    subcategory_amounts.setdefault(current_category, {})[name] = sub_amounts
+                continue
             try:
                 cat_type = CategoryType(type_raw)
             except ValueError:
                 cat_type = CategoryType.EXPENSE
             categories.append(Category(name, cat_type))
+            current_category = name
             cat_amounts: dict = {}
             for i, month in enumerate(months):
                 col_idx = 2 + i
@@ -224,11 +240,21 @@ class XlsxStore:
         if not categories:
             categories = list(DEFAULT_CATEGORIES)
 
+        # Parent category cells may be formulas when child rows exist. Recompute
+        # those values from parsed subcategory rows so the UI can prefill.
+        for cat_name, children in subcategory_amounts.items():
+            cat_amounts = amounts.setdefault(cat_name, {})
+            for month in months:
+                child_total = sum(values.get(month, 0.0) for values in children.values())
+                if child_total:
+                    cat_amounts[month] = round(child_total, 2)
+
         return YearSheetLayout(
             year=year,
             categories=categories,
             months=months,
             amounts=amounts,
+            subcategory_amounts=subcategory_amounts,
         )
 
     def _write_layout(self, wb: Workbook, layout: YearSheetLayout) -> None:
@@ -247,6 +273,7 @@ class XlsxStore:
             ws.column_dimensions[get_column_letter(i)].width = 12
 
         ws.sheet_view.showGridLines = False
+        ws.sheet_properties.outlinePr.summaryBelow = False
         ws.sheet_properties.tabColor = DARK_HEADER_BG
 
     def _apply_dark_theme(
@@ -286,8 +313,16 @@ class XlsxStore:
 
         for r_idx, row in enumerate(grid, start=1):
             label = row[0] if row else None
+            row_type = row[1] if len(row) > 1 else None
             is_header = r_idx == 1
             is_total = isinstance(label, str) and label in TOTAL_LABELS
+            is_subcategory = row_type == "Subcategory"
+
+            if is_subcategory:
+                ws.row_dimensions[r_idx].hidden = True
+                ws.row_dimensions[r_idx].outlineLevel = 1
+            elif r_idx > 1:
+                ws.row_dimensions[r_idx].collapsed = True
 
             for c_idx, value in enumerate(row, start=1):
                 cell = ws.cell(row=r_idx, column=c_idx, value=value)
@@ -299,6 +334,14 @@ class XlsxStore:
                 elif is_total:
                     cell.fill = total_fill
                     cell.font = total_font
+                elif is_subcategory:
+                    cell.fill = input_fill
+                    cell.font = muted_font
+                    if c_idx == 1:
+                        cell.alignment = Alignment(indent=1)
+                    if isinstance(value, (int, float)):
+                        cell.number_format = "#,##0.00"
+                        cell.alignment = money_align
                 elif c_idx >= first_month_col and c_idx < year_col:
                     cell.fill = input_fill
                     cell.font = body_font

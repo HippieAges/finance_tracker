@@ -89,22 +89,49 @@ def build_sheet_grid(layout: YearSheetLayout) -> List[List[object]]:
     months = layout.months
     month_count = len(months)
     cats = layout.categories
-    income_rows, expense_rows = income_expense_row_numbers(cats)
-    income_total_row, expense_total_row, net_row = total_row_indices(len(cats))
-
     grid: List[List[object]] = [header_row(months)]
+    income_rows: List[int] = []
+    expense_rows: List[int] = []
 
-    for i, cat in enumerate(cats):
-        row_num = 2 + i
+    for cat in cats:
+        row_num = len(grid) + 1
+        if cat.type == CategoryType.INCOME:
+            income_rows.append(row_num)
+        else:
+            expense_rows.append(row_num)
+
+        subcats = layout.subcategory_amounts.get(cat.name, {})
+        has_subcats = bool(subcats)
         row: List[object] = [cat.name, cat.type.value]
         cat_amounts = layout.amounts.get(cat.name, {})
-        for m in months:
-            val = cat_amounts.get(m)
-            row.append(float(val) if val is not None else None)
+
+        if has_subcats:
+            first_sub_row = row_num + 1
+            last_sub_row = row_num + len(subcats)
+            for col_offset in range(month_count):
+                col = column_letter(first_month_col() + col_offset)
+                row.append(f"=SUM({col}{first_sub_row}:{col}{last_sub_row})")
+        else:
+            for m in months:
+                val = cat_amounts.get(m)
+                row.append(float(val) if val is not None else None)
         row.append(sum_formula(row_num, month_count))
         grid.append(row)
 
-    # Total rows
+        for sub_name in sorted(subcats):
+            sub_row_num = len(grid) + 1
+            sub_row: List[object] = [sub_name, "Subcategory"]
+            month_amounts = subcats[sub_name]
+            for m in months:
+                val = month_amounts.get(m)
+                sub_row.append(float(val) if val is not None else None)
+            sub_row.append(sum_formula(sub_row_num, month_count))
+            grid.append(sub_row)
+
+    income_total_row = len(grid) + 1
+    expense_total_row = len(grid) + 2
+
+    # Total rows sum only visible parent category rows, not hidden subcategory rows.
     for label, rows in (
         (INCOME_TOTAL_LABEL, income_rows),
         (EXPENSE_TOTAL_LABEL, expense_rows),
